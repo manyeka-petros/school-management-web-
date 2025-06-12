@@ -24,24 +24,67 @@ class ClassroomSerializer(serializers.ModelSerializer):
 
 # -------------------- Grade Serializer --------------------
 
+from rest_framework import serializers
+from .models import Grade
+from portalaccount.models import StudentProfile
+from django.contrib.auth.models import User
+
+
 class GradeSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source='student.user.get_full_name', read_only=True)
+    # Allow student name as input
+    student_name = serializers.CharField(write_only=True, required=False)  # Optional input
+    student_display = serializers.CharField(source='student.user.get_full_name', read_only=True)
     subject_name = serializers.CharField(source='subject.name', read_only=True)
     graded_by_name = serializers.CharField(source='graded_by.user.get_full_name', read_only=True)
 
     class Meta:
         model = Grade
         fields = [
-            'id', 'student', 'student_name',
-            'subject', 'subject_name',
-            'exam_type', 'score',
-            'graded_by', 'graded_by_name',
+            'id',
+            'student',            # Accepts ID input
+            'student_name',       # Accepts "First Last" input
+            'student_display',    # Shows student full name in response
+            'subject',
+            'subject_name',
+            'exam_type',
+            'score',
+            'graded_by',
+            'graded_by_name',
             'graded_at'
         ]
         read_only_fields = [
             'graded_by', 'graded_by_name', 'graded_at',
-            'student_name', 'subject_name'
+            'student_display', 'subject_name'
         ]
+
+    def validate(self, attrs):
+        student_name = attrs.pop('student_name', None)
+        student = attrs.get('student', None)
+
+        if student_name and not student:
+            try:
+                first_name, last_name = student_name.strip().split(' ', 1)
+            except ValueError:
+                raise serializers.ValidationError("Student name must include both first and last name.")
+
+            user = User.objects.filter(
+                first_name__iexact=first_name.strip(),
+                last_name__iexact=last_name.strip()
+            ).first()
+
+            if not user:
+                raise serializers.ValidationError(f'Student "{student_name}" not found.')
+
+            student_profile = StudentProfile.objects.filter(user=user).first()
+            if not student_profile:
+                raise serializers.ValidationError(f'"{student_name}" is not a student.')
+
+            attrs['student'] = student_profile
+
+        if not attrs.get('student'):
+            raise serializers.ValidationError("Student is required, either by ID or name.")
+
+        return attrs
 
 # -------------------- Subject Serializer --------------------
 

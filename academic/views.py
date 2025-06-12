@@ -1,13 +1,16 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
+from django.shortcuts import get_object_or_404
+from django.contrib.auth import get_user_model
 
 from .models import Classroom, Subject, Grade, Enrollment
 from portalaccount.models import StudentProfile, TeacherProfile
 from .serializers import ClassroomSerializer, SubjectSerializer, GradeSerializer
+
+User = get_user_model()
 
 # -------------------- Classroom --------------------
 class ClassroomListCreate(APIView):
@@ -54,7 +57,6 @@ class SubjectEnrollStudent(APIView):
         student_id = request.data.get("student_id")
         student = get_object_or_404(StudentProfile, id=student_id)
 
-        # Prevent duplicate enrollment
         if Enrollment.objects.filter(student=student, subject=subject).exists():
             return Response({'message': 'Student is already enrolled in this subject.'}, status=status.HTTP_200_OK)
 
@@ -62,39 +64,57 @@ class SubjectEnrollStudent(APIView):
         return Response({'message': 'Student enrolled successfully.'}, status=status.HTTP_201_CREATED)
 
 # -------------------- Grade --------------------
-from rest_framework.exceptions import ValidationError
-
 class GradeCreate(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         user = request.user
+
+        if user.user_type != User.UserType.TEACHER:
+            return Response({'detail': 'Only teachers can assign grades.'}, status=status.HTTP_403_FORBIDDEN)
+
         teacher_profile = get_object_or_404(TeacherProfile, user=user)
         data = request.data.copy()
 
-        student_id = data.get('student')
+        student_name = data.get('student_name')
         subject_id = data.get('subject')
         exam_type = data.get('exam_type')
 
-        # Check if grade already exists
-        existing_grade = Grade.objects.filter(
-            student_id=student_id,
-            subject_id=subject_id,
-            exam_type=exam_type
-        ).first()
+        if not student_name or not subject_id or not exam_type:
+            return Response({'detail': 'Missing required fields.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if existing_grade:
-            return Response(
-                {'detail': 'Grade for this student, subject, and exam type already exists.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        # Match student by full name
+        student_user = None
+        for student in User.objects.filter(user_type=User.UserType.STUDENT):
+            full_name = f"{student.first_name.strip()} {student.last_name.strip()}"
+            if full_name.lower() == student_name.strip().lower():
+                student_user = student
+                break
+
+        if not student_user:
+            return Response({'detail': f'Student "{student_name}" not found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Fetch StudentProfile
+        try:
+            student_profile = StudentProfile.objects.get(user=student_user)
+        except StudentProfile.DoesNotExist:
+            return Response({'detail': 'Student profile not found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Prevent duplicate grade
+        if Grade.objects.filter(student=student_profile, subject_id=subject_id, exam_type=exam_type).exists():
+            return Response({'detail': 'Grade already exists for this student, subject, and exam type.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        data['student'] = student_profile.id
 
         serializer = GradeSerializer(data=data)
         if serializer.is_valid():
             serializer.save(graded_by=teacher_profile)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 class GradeCreateOrUpdate(APIView):
     authentication_classes = [JWTAuthentication]
@@ -268,35 +288,33 @@ class AllSubjectsView(APIView):
         serializer = SubjectSerializer(subjects, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-
-
 class GradeDetailOrList(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
-
     def get(self, request, grade_id=None):
-        """
-        If grade_id is provided in the URL, return that grade.
-        Otherwise, return list of grades filtered by optional query params:
-        student_id, subject_id, exam_type
-        """
         if grade_id:
             grade = get_object_or_404(Grade, id=grade_id)
             serializer = GradeSerializer(grade)
             return Response(serializer.data)
-
-        # If no grade_id, filter by optional query params
-        student_id = request.query_params.get('student_id')
-        subject_id = request.query_params.get('subject_id')
-        exam_type = request.query_params.get('exam_type')
-
         grades = Grade.objects.all()
-        if student_id:
-            grades = grades.filter(student_id=student_id)
-        if subject_id:
-            grades = grades.filter(subject_id=subject_id)
-        if exam_type:
-            grades = grades.filter(exam_type=exam_type)
-
         serializer = GradeSerializer(grades, many=True)
         return Response(serializer.data)
+# -------------------- Grade Delete --------------------
+class GradeDelete(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, grade_id):
+        user = request.user
+
+        if user.user_type != User.UserType.TEACHER:
+            return Response({'detail': 'Only teachers can delete grades.'}, status=status.HTTP_403_FORBIDDEN)
+
+        grade = get_object_or_404(Grade, id=grade_id)
+
+        # Optional: Ensure the teacher trying to delete the grade is the one who assigned it
+        if grade.graded_by.user != user:
+            return Response({'detail': 'You do not have permission to delete this grade.'}, status=status.HTTP_403_FORBIDDEN)
+
+        grade.delete()
+        return Response({'detail': 'Grade deleted successfully.'}, status=status.HTTP_204_NO_CONTENT)

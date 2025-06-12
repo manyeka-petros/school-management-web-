@@ -3,6 +3,7 @@ from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.utils import timezone
 
 
+
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
         if not email:
@@ -70,7 +71,6 @@ class StudentProfile(models.Model):
     profile_picture = models.ImageField(upload_to='student_profile_pics/', blank=True, null=True)
     address = models.TextField(blank=True, null=True)
     guardian_phone = models.CharField(max_length=15, blank=True, null=True)
-    subjects = models.ManyToManyField(Subject, related_name='students', blank=True)  # Added subjects field
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 

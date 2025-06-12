@@ -15,6 +15,7 @@ from .views import (
     EnrolledSubjectsView,
     AllSubjectsView,
     GradeDetailOrList,
+    GradeDelete,
     
 )
 
@@ -43,4 +44,6 @@ urlpatterns = [
 
     # Dashboard
     path('teacher-dashboard/', TeacherDashboardView.as_view(), name='teacher-dashboard'),
+    
+     path('grades/<int:grade_id>/delete/', GradeDelete.as_view(), name='grade-delete'),
 ]
