@@ -33,6 +33,8 @@ SECRET_KEY = 'django-insecure-g%3bn&%!(qery+6#1l)6m!!m-98g0$_!vo=eu(-8hsx!#*3jue
 DEBUG = True
 
 ALLOWED_HOSTS = []
+AUTH_USER_MODEL = 'portalaccount.User'
+
 
 
 # Application definition
@@ -51,6 +53,9 @@ INSTALLED_APPS = [
     'corsheaders',
     'academic',
     'library',
+    'grading',
+    'django_filters',
+    'attendance',
     'rest_framework.authtoken',
 ]
 
@@ -92,7 +97,7 @@ WSGI_APPLICATION = 'myschoolapp.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'mapo',  # your database name
+        'NAME': 'mapoto',  # your database name
         'USER': 'postgres',    # your database username
         'PASSWORD': 'manyeka12',  # your database password
         'HOST': 'localhost',   # database is hosted locally

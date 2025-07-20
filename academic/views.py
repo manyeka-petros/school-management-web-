@@ -1,320 +1,226 @@
+from django.db import models
+from django.shortcuts import get_object_or_404
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
-from django.shortcuts import get_object_or_404
-from django.contrib.auth import get_user_model
 
-from .models import Classroom, Subject, Grade, Enrollment
+from .models import Classroom, Subject, ClassroomSubject, Enrollment, StudentSubject
 from portalaccount.models import StudentProfile, TeacherProfile
-from .serializers import ClassroomSerializer, SubjectSerializer, GradeSerializer
+from .serializers import ClassroomSerializer, SubjectSerializer, ClassroomSubjectSerializer, StudentSubjectSerializer
 
-User = get_user_model()
 
-# -------------------- Classroom --------------------
+def sync_student_subjects(student):
+    """
+    Ensure that all classroom subjects are assigned explicitly as StudentSubject to the given student.
+    """
+    if not student.classroom:
+        return 0
+
+    classroom_subjects = ClassroomSubject.objects.filter(classroom=student.classroom)
+    created_count = 0
+    for cs in classroom_subjects:
+        obj, created = StudentSubject.objects.get_or_create(
+            student=student,
+            subject=cs.subject,
+            classroom=student.classroom,
+        )
+        if created:
+            created_count += 1
+    return created_count
+
+
 class ClassroomListCreate(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes     = [IsAuthenticated]
 
     def get(self, request):
-        classrooms = Classroom.objects.all()
-        serializer = ClassroomSerializer(classrooms, many=True, context={'request': request})
-        return Response(serializer.data)
+        data = ClassroomSerializer(Classroom.objects.all(), many=True, context={"request": request}).data
+        return Response(data)
 
     def post(self, request):
-        user = request.user
-        teacher_profile = get_object_or_404(TeacherProfile, user=user)
-        data = request.data.copy()
-        data["teacher"] = teacher_profile.id
-        serializer = ClassroomSerializer(data=data)
-        if serializer.is_valid():
-            serializer.save(teacher=teacher_profile)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        ser = ClassroomSerializer(data=request.data)
+        if ser.is_valid():
+            ser.save()
+            return Response(ser.data, status=status.HTTP_201_CREATED)
+        return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
 
-# -------------------- Subject --------------------
-class SubjectCreate(APIView):
+
+class SubjectListCreate(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        user = request.user
-        teacher_profile = get_object_or_404(TeacherProfile, user=user)
-        data = request.data.copy()
-        serializer = SubjectSerializer(data=data)
-        if serializer.is_valid():
-            serializer.save(teacher=teacher_profile)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-class SubjectEnrollStudent(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, subject_id):
-        subject = get_object_or_404(Subject, id=subject_id)
-        student_id = request.data.get("student_id")
-        student = get_object_or_404(StudentProfile, id=student_id)
-
-        if Enrollment.objects.filter(student=student, subject=subject).exists():
-            return Response({'message': 'Student is already enrolled in this subject.'}, status=status.HTTP_200_OK)
-
-        Enrollment.objects.create(student=student, subject=subject)
-        return Response({'message': 'Student enrolled successfully.'}, status=status.HTTP_201_CREATED)
-
-# -------------------- Grade --------------------
-class GradeCreate(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        user = request.user
-
-        if user.user_type != User.UserType.TEACHER:
-            return Response({'detail': 'Only teachers can assign grades.'}, status=status.HTTP_403_FORBIDDEN)
-
-        teacher_profile = get_object_or_404(TeacherProfile, user=user)
-        data = request.data.copy()
-
-        student_name = data.get('student_name')
-        subject_id = data.get('subject')
-        exam_type = data.get('exam_type')
-
-        if not student_name or not subject_id or not exam_type:
-            return Response({'detail': 'Missing required fields.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Match student by full name
-        student_user = None
-        for student in User.objects.filter(user_type=User.UserType.STUDENT):
-            full_name = f"{student.first_name.strip()} {student.last_name.strip()}"
-            if full_name.lower() == student_name.strip().lower():
-                student_user = student
-                break
-
-        if not student_user:
-            return Response({'detail': f'Student "{student_name}" not found.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Fetch StudentProfile
-        try:
-            student_profile = StudentProfile.objects.get(user=student_user)
-        except StudentProfile.DoesNotExist:
-            return Response({'detail': 'Student profile not found.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Prevent duplicate grade
-        if Grade.objects.filter(student=student_profile, subject_id=subject_id, exam_type=exam_type).exists():
-            return Response({'detail': 'Grade already exists for this student, subject, and exam type.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        data['student'] = student_profile.id
-
-        serializer = GradeSerializer(data=data)
-        if serializer.is_valid():
-            serializer.save(graded_by=teacher_profile)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class GradeCreateOrUpdate(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        user = request.user
-        teacher_profile = get_object_or_404(TeacherProfile, user=user)
-        data = request.data.copy()
-
-        student_id = data.get('student')
-        subject_id = data.get('subject')
-        exam_type = data.get('exam_type')
-
-        if not (student_id and subject_id and exam_type):
-            return Response({"error": "student, subject, and exam_type are required."},
-                            status=status.HTTP_400_BAD_REQUEST)
-
-        student = get_object_or_404(StudentProfile, id=student_id)
-        subject = get_object_or_404(Subject, id=subject_id)
-
-        grade_qs = Grade.objects.filter(student=student, subject=subject, exam_type=exam_type)
-        if grade_qs.exists():
-            grade_instance = grade_qs.first()
-            serializer = GradeSerializer(grade_instance, data=data, partial=True)
-            if serializer.is_valid():
-                serializer.save()
-                return Response(serializer.data, status=status.HTTP_200_OK)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        serializer = GradeSerializer(data=data)
-        if serializer.is_valid():
-            serializer.save(graded_by=teacher_profile)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-class StudentGrades(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes     = [IsAuthenticated]
 
     def get(self, request):
-        student_id = request.query_params.get("student_id")
-        student_profile = get_object_or_404(StudentProfile, id=student_id)
-        grades = Grade.objects.filter(student=student_profile)
-        serializer = GradeSerializer(grades, many=True)
-        return Response(serializer.data)
+        data = SubjectSerializer(Subject.objects.all(), many=True, context={"request": request}).data
+        return Response(data)
 
-# -------------------- Classroom Students --------------------
-class ClassroomStudents(APIView):
+    def post(self, request):
+        ser = SubjectSerializer(data=request.data)
+        if ser.is_valid():
+            ser.save()
+            return Response(ser.data, status=status.HTTP_201_CREATED)
+        return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AssignClassroomSubject(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes     = [IsAuthenticated]
 
-    def get(self, request, classroom_id):
-        subjects = Subject.objects.filter(classroom_id=classroom_id)
-        student_ids = Enrollment.objects.filter(subject__in=subjects).values_list("student_id", flat=True).distinct()
-        students = StudentProfile.objects.filter(id__in=student_ids)
+    def get(self, request):
+        data = ClassroomSubjectSerializer(
+            ClassroomSubject.objects.select_related("classroom", "subject", "teacher", "teacher__user"),
+            many=True,
+            context={"request": request},
+        ).data
+        return Response(data)
+
+    def post(self, request):
+        classroom_id   = request.data.get("classroom")
+        subject_id     = request.data.get("subject")
+        teacher_userid = request.data.get("teacher")
+
+        if not all([classroom_id, subject_id, teacher_userid]):
+            return Response(
+                {"error": "Fields 'classroom', 'subject', and 'teacher' are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        classroom = get_object_or_404(Classroom, id=classroom_id)
+        subject   = get_object_or_404(Subject,   id=subject_id)
+        teacher   = TeacherProfile.objects.filter(user_id=teacher_userid).first()
+
+        if not teacher:
+            return Response(
+                {"error": f"No TeacherProfile found for user ID {teacher_userid}."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        cs, created = ClassroomSubject.objects.get_or_create(
+            classroom=classroom,
+            subject=subject,
+            defaults={"teacher": teacher},
+        )
+        if not created:
+            cs.teacher = teacher
+            cs.save()
+
+        return Response(
+            {
+                "message": "Assignment successful.",
+                "classroom": classroom.name,
+                "subject": subject.name,
+                "teacher": teacher.user.get_full_name() or teacher.user.username,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class EnrollInClassroom(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes     = [IsAuthenticated]
+
+    def post(self, request):
+        classroom_id = request.data.get("classroom_id")
+        if not classroom_id:
+            return Response({"error": "classroom_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        student = get_object_or_404(StudentProfile, user=request.user)
+        classroom = get_object_or_404(Classroom, id=classroom_id)
+
+        if student.classroom:
+            return Response({"error": "Student is already enrolled."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if Enrollment.objects.filter(student=student).exists():
+            return Response({"error": "Enrollment already exists."}, status=status.HTTP_400_BAD_REQUEST)
+
+        Enrollment.objects.create(student=student, classroom=classroom, status="active")
+        student.classroom = classroom
+        student.save(update_fields=["classroom"])
+
+        # Assign classroom subjects explicitly to student
+        created_count = sync_student_subjects(student)
+
+        return Response(
+            {
+                "message": f"Enrolled in {classroom.name} successfully.",
+                "subjects_assigned": created_count,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class StudentSubjectsView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes     = [IsAuthenticated]
+
+    def get(self, request, uid=None):
+        if uid is None:
+            student = get_object_or_404(StudentProfile, user=request.user)
+        else:
+            if not (request.user.is_staff or hasattr(request.user, "teacher_profile")):
+                return Response({"detail": "Not authorized."}, status=status.HTTP_403_FORBIDDEN)
+            student = get_object_or_404(StudentProfile, pk=uid)
+
+        subjects = StudentSubject.objects.select_related("subject", "classroom").filter(student=student)
+        if subjects.exists():
+            return Response(StudentSubjectSerializer(subjects, many=True).data, status=status.HTTP_200_OK)
+
+        # fallback: classroom subjects dynamically if no explicit StudentSubject
+        if not student.classroom:
+            return Response({"message": "Student is not in a classroom."}, status=status.HTTP_404_NOT_FOUND)
+
+        fallback = ClassroomSubject.objects.select_related("subject", "teacher", "teacher__user").filter(
+            classroom=student.classroom
+        )
 
         data = [
             {
-                "id": student.id,
-                "full_name": student.user.get_full_name(),
-                "email": student.user.email
+                "subject": row.subject.name,
+                "teacher": row.teacher.user.get_full_name() if row.teacher else "Unassigned",
             }
-            for student in students
+            for row in fallback
         ]
-        return Response(data)
+        return Response(data, status=status.HTTP_200_OK)
 
-# -------------------- Profiles --------------------
-class TeacherProfileView(APIView):
+
+class MyAssignedSubjectsView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes     = [IsAuthenticated]
 
     def get(self, request):
-        user = request.user
-        teacher_profile = get_object_or_404(TeacherProfile, user=user)
-        data = {
-            'id': teacher_profile.id,
-            'full_name': user.get_full_name(),
-            'email': user.email,
-        }
-        return Response(data)
+        student = get_object_or_404(StudentProfile, user=request.user)
+        subjects_qs = StudentSubject.objects.select_related("subject").filter(student=student)
+        data = StudentSubjectSerializer(subjects_qs, many=True).data
+        return Response(data, status=status.HTTP_200_OK)
 
-class StudentProfileView(APIView):
+
+class ClassroomDetailsAPIView(APIView):
     authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes     = [IsAuthenticated]
 
-    def get(self, request):
-        user = request.user
-        student_profile = get_object_or_404(StudentProfile, user=user)
-        data = {
-            'id': student_profile.id,
-            'full_name': user.get_full_name(),
-            'email': user.email,
-        }
-        return Response(data)
+    def get(self, request, pk):
+        classroom = get_object_or_404(Classroom, pk=pk)
 
-# -------------------- Dashboard --------------------
-class TeacherDashboardView(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
+        students_qs = StudentProfile.objects.filter(
+            models.Q(classroom=classroom) |
+            models.Q(enrollments__classroom=classroom, enrollments__status="active")
+        ).select_related("user").distinct()
 
-    def get(self, request):
-        user = request.user
-        teacher_profile = get_object_or_404(TeacherProfile, user=user)
-        classrooms = Classroom.objects.filter(teacher=teacher_profile)
-        serializer = ClassroomSerializer(classrooms, many=True)
-        return Response({
-            "teacher": teacher_profile.user.username,
-            "classrooms": serializer.data
-        }, status=status.HTTP_200_OK)
+        subjects_qs = Subject.objects.filter(classroom_subjects__classroom=classroom).distinct()
 
-# -------------------- Subjects for Students --------------------
-class SubjectListForStudents(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
+        students = [
+            {
+                "id": s.id,
+                "full_name": s.user.get_full_name(),
+                "user_id": s.user.id,
+                "first_name": s.user.first_name,
+                "last_name": s.user.last_name,
+            }
+            for s in students_qs
+        ]
 
-    def get(self, request):
-        user = request.user
-        student = get_object_or_404(StudentProfile, user=user)
+        subjects = [{"id": s.id, "name": s.name} for s in subjects_qs]
 
-        enrolled_subject_ids = Enrollment.objects.filter(student=student).values_list('subject_id', flat=True)
-        enrolled_subjects = Subject.objects.filter(id__in=enrolled_subject_ids)
-        available_subjects = Subject.objects.exclude(id__in=enrolled_subject_ids)
-
-        enrolled_serializer = SubjectSerializer(enrolled_subjects, many=True, context={'request': request})
-        available_serializer = SubjectSerializer(available_subjects, many=True, context={'request': request})
-
-        return Response({
-            "available_subjects": available_serializer.data,
-            "enrolled_subjects": enrolled_serializer.data
-        }, status=status.HTTP_200_OK)
-
-class EnrollInSubject(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, subject_id):
-        user = request.user
-        student = get_object_or_404(StudentProfile, user=user)
-        subject = get_object_or_404(Subject, id=subject_id)
-
-        if Enrollment.objects.filter(student=student, subject=subject).exists():
-            return Response({'message': 'You are already enrolled in this subject.'}, status=status.HTTP_200_OK)
-
-        Enrollment.objects.create(student=student, subject=subject)
-        return Response({'message': 'You have successfully enrolled in this subject.'}, status=status.HTTP_201_CREATED)
-
-class EnrolledSubjectsView(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        student_id = request.query_params.get('student_id')
-        if student_id:
-            student = get_object_or_404(StudentProfile, id=student_id)
-        else:
-            student = get_object_or_404(StudentProfile, user=request.user)
-
-        subject_ids = Enrollment.objects.filter(student=student).values_list("subject_id", flat=True)
-        subjects = Subject.objects.filter(id__in=subject_ids)
-
-        serializer = SubjectSerializer(subjects, many=True, context={'request': request})
-        return Response({"enrolled_subjects": serializer.data}, status=status.HTTP_200_OK)
-
-class AllSubjectsView(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        subjects = Subject.objects.all()
-        serializer = SubjectSerializer(subjects, many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-class GradeDetailOrList(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-    def get(self, request, grade_id=None):
-        if grade_id:
-            grade = get_object_or_404(Grade, id=grade_id)
-            serializer = GradeSerializer(grade)
-            return Response(serializer.data)
-        grades = Grade.objects.all()
-        serializer = GradeSerializer(grades, many=True)
-        return Response(serializer.data)
-# -------------------- Grade Delete --------------------
-class GradeDelete(APIView):
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
-
-    def delete(self, request, grade_id):
-        user = request.user
-
-        if user.user_type != User.UserType.TEACHER:
-            return Response({'detail': 'Only teachers can delete grades.'}, status=status.HTTP_403_FORBIDDEN)
-
-        grade = get_object_or_404(Grade, id=grade_id)
-
-        # Optional: Ensure the teacher trying to delete the grade is the one who assigned it
-        if grade.graded_by.user != user:
-            return Response({'detail': 'You do not have permission to delete this grade.'}, status=status.HTTP_403_FORBIDDEN)
-
-        grade.delete()
-        return Response({'detail': 'Grade deleted successfully.'}, status=status.HTTP_204_NO_CONTENT)
+        return Response({"students": students, "subjects": subjects}, status=status.HTTP_200_OK)

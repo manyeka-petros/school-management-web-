@@ -1,132 +1,141 @@
 from rest_framework import serializers
-from .models import Classroom, Subject, Grade
-from portalaccount.models import StudentProfile, TeacherProfile
 
-# -------------------- Classroom Serializer --------------------
+from .models import (
+    Classroom,
+    Subject,
+    ClassroomSubject,
+    StudentSubject,
+)
+from portalaccount.models import TeacherProfile, StudentProfile
+from portalaccount.serializers import TeacherProfileSerializer
 
+# ───────────────────────────────────────────────
+# SUBJECT
+# ───────────────────────────────────────────────
+class SubjectSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Subject
+        fields = ["id", "name", "code", "description"]
+        extra_kwargs = {"code": {"required": False}}
+
+    def validate_code(self, value):
+        if value and not value.isalnum():
+            raise serializers.ValidationError("Subject code must be alphanumeric.")
+        return value
+
+
+# ───────────────────────────────────────────────
+# CLASSROOM
+# ───────────────────────────────────────────────
 class ClassroomSerializer(serializers.ModelSerializer):
-    teacher_name = serializers.CharField(source='teacher.user.get_full_name', read_only=True)
+    class_teacher_name = serializers.CharField(
+        source="class_teacher.user.full_name", read_only=True
+    )
+    class_teacher_detail = TeacherProfileSerializer(
+        source="class_teacher", read_only=True
+    )
 
     class Meta:
         model = Classroom
-        fields = ['id', 'name', 'teacher', 'teacher_name']
+        fields = [
+            "id",
+            "name",
+            "section",
+            "academic_year",
+            "class_teacher",
+            "class_teacher_name",
+            "class_teacher_detail",
+            "created_at",
+        ]
         extra_kwargs = {
-            'teacher': {'read_only': True}
+            "class_teacher": {"required": False},
+            "section": {"required": False},
         }
 
-    def create(self, validated_data):
-        return super().create(validated_data)
-
-    def update(self, instance, validated_data):
-        instance.name = validated_data.get('name', instance.name)
-        instance.save()
-        return instance
-
-# -------------------- Grade Serializer --------------------
-
-from rest_framework import serializers
-from .models import Grade
-from portalaccount.models import StudentProfile
-from django.contrib.auth.models import User
+    def validate_academic_year(self, value):
+        if len(value) < 4:
+            raise serializers.ValidationError("Academic year seems invalid.")
+        return value
 
 
-class GradeSerializer(serializers.ModelSerializer):
-    # Allow student name as input
-    student_name = serializers.CharField(write_only=True, required=False)  # Optional input
-    student_display = serializers.CharField(source='student.user.get_full_name', read_only=True)
-    subject_name = serializers.CharField(source='subject.name', read_only=True)
-    graded_by_name = serializers.CharField(source='graded_by.user.get_full_name', read_only=True)
+# ───────────────────────────────────────────────
+# CLASSROOM-SUBJECT ASSIGNMENT
+# ───────────────────────────────────────────────
+class ClassroomSubjectSerializer(serializers.ModelSerializer):
+    classroom_name = serializers.CharField(source="classroom.__str__", read_only=True)
+    subject_name = serializers.CharField(source="subject.name", read_only=True)
+    teacher_name = serializers.CharField(source="teacher.user.full_name", read_only=True)
+
+    classroom_detail = ClassroomSerializer(source="classroom", read_only=True)
+    subject_detail = SubjectSerializer(source="subject", read_only=True)
+    teacher_detail = TeacherProfileSerializer(source="teacher", read_only=True)
+
+    teacher = serializers.IntegerField(write_only=True, required=True)
 
     class Meta:
-        model = Grade
+        model = ClassroomSubject
         fields = [
-            'id',
-            'student',            # Accepts ID input
-            'student_name',       # Accepts "First Last" input
-            'student_display',    # Shows student full name in response
-            'subject',
-            'subject_name',
-            'exam_type',
-            'score',
-            'graded_by',
-            'graded_by_name',
-            'graded_at'
+            "id",
+            "classroom",
+            "subject",
+            "teacher",
+            "classroom_name",
+            "classroom_detail",
+            "subject_name",
+            "subject_detail",
+            "teacher_name",
+            "teacher_detail",
         ]
-        read_only_fields = [
-            'graded_by', 'graded_by_name', 'graded_at',
-            'student_display', 'subject_name'
-        ]
+
+    def to_internal_value(self, data):
+        validated = super().to_internal_value(data)
+        teacher_user_id = data.get("teacher")
+        teacher_profile = TeacherProfile.objects.filter(user_id=teacher_user_id).first()
+        if not teacher_profile:
+            raise serializers.ValidationError(
+                {"teacher": f"No TeacherProfile found for user ID {teacher_user_id}."}
+            )
+        validated["teacher"] = teacher_profile
+        return validated
 
     def validate(self, attrs):
-        student_name = attrs.pop('student_name', None)
-        student = attrs.get('student', None)
+        classroom = attrs.get("classroom") or getattr(self.instance, "classroom", None)
+        subject = attrs.get("subject") or getattr(self.instance, "subject", None)
 
-        if student_name and not student:
-            try:
-                first_name, last_name = student_name.strip().split(' ', 1)
-            except ValueError:
-                raise serializers.ValidationError("Student name must include both first and last name.")
-
-            user = User.objects.filter(
-                first_name__iexact=first_name.strip(),
-                last_name__iexact=last_name.strip()
-            ).first()
-
-            if not user:
-                raise serializers.ValidationError(f'Student "{student_name}" not found.')
-
-            student_profile = StudentProfile.objects.filter(user=user).first()
-            if not student_profile:
-                raise serializers.ValidationError(f'"{student_name}" is not a student.')
-
-            attrs['student'] = student_profile
-
-        if not attrs.get('student'):
-            raise serializers.ValidationError("Student is required, either by ID or name.")
-
+        if classroom and subject:
+            qs = ClassroomSubject.objects.filter(classroom=classroom, subject=subject)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError("This subject is already assigned to that classroom.")
         return attrs
 
-# -------------------- Subject Serializer --------------------
 
-class SubjectSerializer(serializers.ModelSerializer):
-    students = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=StudentProfile.objects.all(),
-        required=False
+# ───────────────────────────────────────────────
+# STUDENT-SUBJECT (Explicit per student)
+# ───────────────────────────────────────────────
+class StudentSubjectSerializer(serializers.ModelSerializer):
+    subject_name = serializers.CharField(source="subject.name", read_only=True)
+    classroom_name = serializers.CharField(source="classroom.__str__", read_only=True)
+
+    # OPTIONAL: Show student name (helpful for admin usage)
+    student_name = serializers.CharField(source="student.user.get_full_name", read_only=True)
+
+    # OPTIONAL: Prevent student ID from being exposed unless writing
+    student = serializers.PrimaryKeyRelatedField(
+        queryset=StudentProfile.objects.all(), write_only=True
     )
-    teacher_name = serializers.CharField(source='teacher.user.get_full_name', read_only=True)
-    grades = serializers.SerializerMethodField()
 
     class Meta:
-        model = Subject
-        fields = ['id', 'name', 'classroom', 'teacher', 'teacher_name', 'students', 'grades']
-        extra_kwargs = {
-            'teacher': {'read_only': True}
-        }
-
-    def get_grades(self, obj):
-        request = self.context.get('request')
-        if request and hasattr(request.user, 'studentprofile'):
-            student = request.user.studentprofile
-            return GradeSerializer(
-                obj.grades.filter(student=student),
-                many=True
-            ).data
-        return []
-
-    def create(self, validated_data):
-        students = validated_data.pop('students', [])
-        subject = super().create(validated_data)
-        subject.students.set(students)
-        return subject
-
-    def update(self, instance, validated_data):
-        instance.name = validated_data.get('name', instance.name)
-        instance.classroom = validated_data.get('classroom', instance.classroom)
-
-        if 'students' in validated_data:
-            students = validated_data.pop('students')
-            instance.students.set(students)
-
-        instance.save()
-        return instance
+        model = StudentSubject
+        fields = [
+            "id",
+            "student",
+            "student_name",  # Optional for UI or admin display
+            "subject",
+            "subject_name",
+            "classroom",
+            "classroom_name",
+            "assigned_at",
+        ]
+        read_only_fields = ["assigned_at", "subject_name", "classroom_name", "student_name"]

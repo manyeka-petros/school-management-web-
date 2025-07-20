@@ -1,49 +1,28 @@
 from django.urls import path
 from .views import (
     ClassroomListCreate,
-    SubjectCreate,
-    SubjectEnrollStudent,
-    GradeCreate,
-    GradeCreateOrUpdate,
-    StudentGrades,
-    ClassroomStudents,
-    TeacherProfileView,
-    StudentProfileView,
-    TeacherDashboardView,
-    SubjectListForStudents,
-    EnrollInSubject,
-    EnrolledSubjectsView,
-    AllSubjectsView,
-    GradeDetailOrList,
-    GradeDelete,
-    
+    SubjectListCreate,
+    AssignClassroomSubject,
+    EnrollInClassroom,
+    StudentSubjectsView,
+    ClassroomDetailsAPIView,
+    MyAssignedSubjectsView,  # NEW ↩
 )
 
 urlpatterns = [
-    # Classroom
-    path('classrooms/', ClassroomListCreate.as_view(), name='classroom-list-create'),
-    path('classrooms/<int:classroom_id>/students/', ClassroomStudents.as_view(), name='classroom-students'),
+    # core CRUD
+    path("classrooms/",             ClassroomListCreate.as_view()),
+    path("subjects/",               SubjectListCreate.as_view()),
+    path("assign-subject/",         AssignClassroomSubject.as_view()),
 
-    # Subject
-    path('subjects/create/', SubjectCreate.as_view(), name='subject-create'),
-    path('subjects/<int:subject_id>/enroll-student/', SubjectEnrollStudent.as_view(), name='subject-enroll-student'),
-    path('subjects/', SubjectListForStudents.as_view(), name='subject-list-for-students'),
-    path('subjects/<int:subject_id>/enroll/', EnrollInSubject.as_view(), name='enroll-in-subject'),
-    path('subjects/enrolled/', EnrolledSubjectsView.as_view(), name='enrolled-subjects'),
-     path('subjects/all/', AllSubjectsView.as_view(), name='all-subjects'),
-    # Grade
-    path('grades/create/', GradeCreate.as_view(), name='grade-create'),
-    path('grades/create-or-update/', GradeCreateOrUpdate.as_view(), name='grade-create-or-update'),
-    path('grades/student/', StudentGrades.as_view(), name='student-grades'),
+    # enrolment
+    path("enroll/",                 EnrollInClassroom.as_view()),
 
-    # Profiles
-    path('teachers/me/', TeacherProfileView.as_view(), name='teacher-profile'),
-    path('students/me/', StudentProfileView.as_view(), name='student-profile'),
-    path('grades/', GradeDetailOrList.as_view(), name='grade-list'),
-    path('grades/<int:grade_id>/', GradeDetailOrList.as_view(), name='grade-detail'),
+    # subjects for learners
+    path("my-subjects/",                       StudentSubjectsView.as_view()),
+    path("student-subjects/<int:uid>/",        StudentSubjectsView.as_view()),
+    path("my-assigned-subjects/",              MyAssignedSubjectsView.as_view()),  # NEW ↩
 
-    # Dashboard
-    path('teacher-dashboard/', TeacherDashboardView.as_view(), name='teacher-dashboard'),
-    
-     path('grades/<int:grade_id>/delete/', GradeDelete.as_view(), name='grade-delete'),
+    # extra helpers
+    path("classroom-details/<int:pk>/",        ClassroomDetailsAPIView.as_view()),
 ]

@@ -1,16 +1,8 @@
 from django.urls import path
-from .views import (
-    AnnouncementCreateView,
-    AnnouncementListView,
-    AnnouncementUpdateView,
-    AnnouncementDeleteView,
-    AnnouncementDetailView,
-)
+from .views import AnnouncementListCreate, AnnouncementDetail, AnnouncementFileDownload
 
 urlpatterns = [
-    path('announcements/create/', AnnouncementCreateView.as_view(), name='announcement-create'),
-    path('announcements/', AnnouncementListView.as_view(), name='announcement-list'),
-    path('announcements/<int:pk>/', AnnouncementDetailView.as_view(), name='announcement-update'),
-     path('announcements/update/<int:pk>/', AnnouncementUpdateView.as_view(), name='announcement-update'),
-    path('announcements/delete/<int:pk>/', AnnouncementDeleteView.as_view(), name='announcement-delete'),
+    path('announcements/', AnnouncementListCreate.as_view(), name='announcement-list-create'),
+    path('announcements/<int:pk>/', AnnouncementDetail.as_view(), name='announcement-detail'),
+    path('announcements/<int:pk>/download/', AnnouncementFileDownload.as_view(), name='announcement-file-download'),
 ]

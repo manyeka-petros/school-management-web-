@@ -28,8 +28,11 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('',include('portalaccount.urls')),
     path('', include('newsevents.urls')),
-    path('', include('academic.urls')),
+    path('academic/', include('academic.urls')),
     path('', include('library.urls')),
+    path('', include('attendance.urls')),
+    path('', include('grading.urls')),
+
     
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
